@@ -109,7 +109,6 @@ Add these in Settings → Secrets → Actions:
 
 ---
 
-## 作者 / Author
-
-Anita Tamang
+## 作者 / Autho
+Tamang Amish
 GitHub: https://github.com/amishanita
