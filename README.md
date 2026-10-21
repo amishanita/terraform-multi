@@ -1,114 +1,121 @@
-# Terraform Multi-Environment AWS Infrastructure + GitHub Actions CI/CD
+# Terraform Multi-Environment AWS Infrastructure | Terraform による複数環境の AWS インフラ
 
-## 概要 / Overview
+開発環境（dev）と本番環境（prod）の AWS インフラを Terraform で管理し、GitHub Actions で plan と apply を自動化したプロジェクトです。
 
-**EN:** Production-grade AWS infrastructure provisioned entirely with Terraform, featuring a complete multi-environment setup (dev/prod) with automated CI/CD via GitHub Actions.
+AWS infrastructure for separate dev and prod environments, managed with Terraform and automated with GitHub Actions.
 
-**JP:** TerraformとGitHub ActionsによるフルスタックAWSインフラ構成。開発環境と本番環境を分離した、実務レベルのIaCプロジェクトです。
+![AWS](https://img.shields.io/badge/AWS-232F3E)
+![Terraform](https://img.shields.io/badge/Terraform-844FBA?logo=terraform&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?logo=githubactions&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL%208.0-4479A1?logo=mysql&logoColor=white)
 
 ---
 
-## アーキテクチャ / Architecture
+## 構成図 / Architecture
+
+```mermaid
+flowchart TB
+    subgraph VPC["VPC 10.0.0.0/16"]
+        subgraph PUB[Public Subnet]
+            EC2[EC2<br/>Amazon Linux 2023]
+        end
+        subgraph PRI[Private Subnet]
+            RDS[(RDS MySQL 8.0<br/>暗号化 / encrypted)]
+        end
+        EC2 -- SG で許可した通信のみ --> RDS
+    end
+    EC2 --> S3APP[(S3 アプリ用<br/>バージョニング・暗号化)]
+    IAM[IAM Role<br/>SSM アクセス] --> EC2
+    TF[Terraform] --> STATE[(S3 リモート state)]
+    TF --> LOCK[(DynamoDB<br/>state ロック)]
 ```
-VPC (10.0.0.0/16)
-├── Public Subnet  → EC2 App Server
-└── Private Subnet → RDS MySQL 8.0
-
-S3  → App Storage (encrypted, versioned)
-S3  → Terraform Remote State
-DynamoDB → State Locking
-```
 
 ---
 
-## 構成リソース / Resources
+## 作成するリソース / Resources
 
-| Resource | Details |
-|----------|---------|
-| VPC | Custom VPC with public and private subnets |
-| EC2 | Amazon Linux 2023, encrypted gp3 volume |
-| RDS | MySQL 8.0, private subnet, encrypted |
-| S3 | App bucket with versioning and AES256 encryption |
-| S3 | Remote state backend |
-| DynamoDB | Terraform state locking |
-| IAM | EC2 role with SSM access |
-| Security Groups | RDS only accessible from EC2 security group |
+| リソース / Resource | 内容 / Details |
+|---|---|
+| VPC | パブリックとプライベートのサブネット / public and private subnets |
+| EC2 | Amazon Linux 2023、暗号化した gp3 ボリューム |
+| RDS | MySQL 8.0、プライベートサブネット、暗号化 |
+| S3（アプリ用） | バージョニング、AES256 暗号化 |
+| S3（state 用） | Terraform のリモート state |
+| DynamoDB | state のロック（同時実行による破損を防止） |
+| IAM | SSM で接続できる EC2 用ロール（SSH 鍵を使わない運用） |
+| Security Group | RDS へは EC2 のセキュリティグループからのみ接続可能 |
 
 ---
 
-## 環境差分 / Environment Differences
+## 環境ごとの違い / Dev vs Prod
 
-| Setting | Dev | Prod |
-|---------|-----|------|
+| 項目 / Setting | Dev | Prod |
+|---|---|---|
 | EC2 | t3.micro | t3.medium |
 | RDS | db.t3.micro | db.t3.small |
-| Availability Zones | 2 | 3 |
-| Multi-AZ RDS | No | Yes |
-| Deletion Protection | No | Yes |
-| Final Snapshot | No | Yes |
+| アベイラビリティゾーン / AZs | 2 | 3 |
+| RDS Multi-AZ | なし / No | あり / Yes |
+| 削除保護 / Deletion protection | なし / No | あり / Yes |
+| 削除時のスナップショット / Final snapshot | なし / No | あり / Yes |
+
+dev は費用を抑え、prod は可用性とデータ保護を優先しています。
+
+Dev keeps costs low. Prod prioritises availability and protecting data.
 
 ---
 
-## CI/CD パイプライン / CI/CD Pipeline
+## CI/CD パイプライン / Pipeline
 
-**terraform-plan.yml**
-- Triggers on Pull Request to main
-- Runs: init, validate, plan
-- Posts plan output as PR comment
+```mermaid
+flowchart LR
+    PR[プルリクエスト<br/>Pull request] --> P[init → validate → plan]
+    P --> C[plan の結果を<br/>PR にコメント]
+    C --> M[main にマージ<br/>merge]
+    M --> A[terraform apply]
+```
 
-**terraform-apply.yml**
-- Triggers on merge to main
-- Runs: init, apply -auto-approve
-- Deploys infrastructure automatically
+| ワークフロー / Workflow | タイミング / Trigger | 内容 / Steps |
+|---|---|---|
+| `terraform-plan.yml` | main へのプルリクエスト | init、validate、plan。結果を PR にコメント |
+| `terraform-apply.yml` | main へのマージ | init、apply |
+
+レビューする人は、マージ前に「何が作られ、何が変わるか」を PR 上で確認できます。
+
+Reviewers can see exactly what will change before anything is merged.
 
 ---
 
-## セットアップ / Getting Started
+## 使い方 / Getting started
 
-### 前提条件 / Prerequisites
-- Terraform >= 1.5.0
-- AWS CLI configured
-- AWS account (free tier works for dev)
+**必要なもの / Prerequisites:** Terraform 1.5.0 以上、AWS CLI、AWS アカウント（dev は無料枠でほぼ動きます）
 
-### 手順 / Steps
-
-1. Clone the repository
 ```bash
 git clone https://github.com/amishanita/terraform-multi.git
 cd terraform-multi
-```
-
-2. Initialize Terraform
-```bash
 terraform init
+terraform plan
+terraform apply
 ```
 
-3. Deploy
-```bash
-terraform apply -auto-approve
-```
+GitHub Actions で使う Secrets（Settings → Secrets → Actions）：
 
-### GitHub Actions Secrets
+| Secret | 内容 |
+|---|---|
+| `AWS_ACCESS_KEY_ID` | IAM ユーザーのアクセスキー |
+| `AWS_SECRET_ACCESS_KEY` | IAM ユーザーのシークレットキー |
 
-Add these in Settings → Secrets → Actions:
-
-| Secret | Description |
-|--------|-------------|
-| AWS_ACCESS_KEY_ID | IAM user access key |
-| AWS_SECRET_ACCESS_KEY | IAM user secret key |
+> ⚠️ 確認が終わったら `terraform destroy` で削除してください。RDS は止めておくだけでも費用がかかります。
+> Run `terraform destroy` when you are done. RDS costs money even when idle.
 
 ---
 
-## 技術スタック / Tech Stack
+## 改善点 / Next steps
 
-- IaC: Terraform (HCL)
-- Cloud: AWS (VPC, EC2, RDS, S3, DynamoDB, IAM)
-- CI/CD: GitHub Actions
-- OS: Amazon Linux 2023
-- Database: MySQL 8.0
+- 現在はマージで自動 apply しています。本番は手動承認を入れる形に変えたいと考えています。 / Add a manual approval step before applying to prod.
+- アクセスキーを GitHub Actions の OIDC に置き換え、長期の認証情報をなくす予定です。 / Replace access keys with OIDC.
+- `main.tf` 1ファイルにまとまっているので、VPC・EC2・RDS をモジュールに分けたいです。 / Split `main.tf` into modules.
+- `tflint` や `checkov` で、コードの品質とセキュリティのチェックを CI に追加したいです。 / Add tflint and checkov to CI.
 
 ---
 
-## 作者 / Autho
-Tamang Amish
-GitHub: https://github.com/amishanita
+**Tamang Amish**　|　[GitHub](https://github.com/amishanita)　|　[LinkedIn](https://www.linkedin.com/in/tamang-amish-669289250)
